@@ -1,0 +1,6 @@
+# 运行期依赖（都已放进 vendor 目录，正常不用手动装）
+# 如需重装：setup.bat
+pyftpdlib>=2.0.0
+# pyftpdlib 在 Python 3.12+ 需要这两个 asynchat/asyncore 兼容垫片
+pyasynchat>=1.0.5
+pyasyncore>=1.0.5

@@ -1,0 +1,16 @@
+{
+  "save_dir": "",
+  "port": 21,
+  "ftp_user": "anonymous",
+  "ftp_password": "",
+  "anonymous": true,
+  "printer_host": "192.168.1.100",
+  "admin_user": "admin",
+  "admin_password": "",
+  "last_name": "",
+  "show_browser": false,
+  "ftp_path": "/",
+  "add_to_favorites": true,
+  "step_wait_ms": 1500,
+  "merge_by_ip": true
+}
