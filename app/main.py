@@ -29,7 +29,7 @@ from .tray import TrayIcon
 from .printer_ricoh import RicohAddressBookRegistrar, RegistrationResult, WIM_PATH, probe_printer
 
 APP_TITLE = "扫描直连 · 一键注册"
-VERSION = "1.0"
+VERSION = "1.1.0"
 
 COLOR_IDLE = "#8c8c8c"
 COLOR_OK = "#1a7f37"

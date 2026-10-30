@@ -20,9 +20,20 @@
 
 ---
 
+## 下载（开箱即用）
+
+不想自己打包就直接下 Release：
+
+- **单文件版** → [ScanLink-v1.1.0-portable.exe](https://github.com/shidaifufen/RICOH_FTP_scan/releases/download/v1.1.0/ScanLink-v1.1.0-portable.exe)（14MB，一个文件拿走即用）
+- **文件夹版** → [ScanLink-v1.1.0-folder.zip](https://github.com/shidaifufen/RICOH_FTP_scan/releases/download/v1.1.0/ScanLink-v1.1.0-folder.zip)（14MB，解压后双击 `启动.bat`，启动更快）
+
+全部版本：<https://github.com/shidaifufen/RICOH_FTP_scan/releases>
+
+---
+
 ## 一、怎么用（现场 3 步）
 
-程序有**两种打包**，功能一样，选一种用：
+**第 1 步：拿到程序**（两种打包，功能一样，选一种）
 
 | 版本 | 长什么样 | 适合 |
 |---|---|---|
@@ -32,17 +43,20 @@
 > 文件夹版**必须整个文件夹一起拷**；只拷 exe 会报
 > `Failed to load Python DLL ... _internal\python312.dll`（依赖在 `_internal` 里）。
 
-启动：双击 `启动.bat`（不弹 SmartScreen），或直接双击 exe
+**第 2 步：启动**：双击 `启动.bat`（不弹 SmartScreen），或直接双击 exe
 （未签名程序，可能弹「已保护你的电脑」→「更多信息」→「仍要运行」）。
 不用装 Python、也不用装 FTP 软件。
-2. 填三样东西：
-   | 填什么 | 说明 |
-   |---|---|
-   | 打印机地址 | 打印机后台网址里的 IP，例如 `192.168.1.100` |
-   | 管理员密码 | 理光 Web Image Monitor 的 admin 密码（IT 设的那个） |
-   | 目的地名字 | 想显示在打印机面板上的名字，例如 `张三`、`财务` |
-3. 点 **「确认并注册」**。看到"注册完成"后，到打印机面板：
-   **扫描 → 选择「张三」→ 开始扫描**，文件会直接落到本机保存目录。
+
+**第 3 步：填三样东西**
+
+| 填什么 | 说明 |
+|---|---|
+| 打印机地址 | 打印机后台网址里的 IP，例如 `192.168.1.100` |
+| 管理员密码 | 理光 Web Image Monitor 的 admin 密码（IT 设的那个） |
+| 目的地名字 | 想显示在打印机面板上的名字，例如 `张三`、`财务` |
+
+然后点 **「确认并注册」**。看到"注册完成"后，到打印机面板：
+**扫描 → 选择「张三」→ 开始扫描**，文件会直接落到本机保存目录。
 
 程序会自动：启动 FTP 服务、检测本机 IP、放通防火墙、登录打印机后台、
 新建通讯簿条目（FTP / 端口 / 服务器=本机 IP / 路径 / 账号）、校验结果。
