@@ -21,7 +21,7 @@ import webbrowser
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
-from . import cdp, firewall, netinfo
+from . import autostart, cdp, firewall, netinfo
 from .cdp import CdpBrowser
 from .config import AppConfig, default_scan_dir, load_config, save_config
 from .ftp_server import DEFAULT_PASSIVE_RANGE, FtpScanServer, ReceivedFile, PYFTPDLIB_AVAILABLE
@@ -29,7 +29,12 @@ from .tray import TrayIcon
 from .printer_ricoh import RicohAddressBookRegistrar, RegistrationResult, WIM_PATH, probe_printer
 
 APP_TITLE = "扫描直连 · 一键注册"
-VERSION = "1.1.0"
+VERSION = "1.3.0"
+
+# IP 校验：每 60 秒看一次本机 IP；变动后自动重启 FTP 并更新打印机注册信息
+IP_CHECK_INTERVAL = 60
+# 两次自动更新之间至少间隔 5 分钟，避免 VPN/多网卡来回切导致反复重注册
+IP_AUTO_UPDATE_COOLDOWN = 300
 
 COLOR_IDLE = "#8c8c8c"
 COLOR_OK = "#1a7f37"
@@ -48,11 +53,19 @@ def enable_hi_dpi() -> None:
 
 
 class App:
-    def __init__(self, root: tk.Tk, base_dir: str, enable_tray: bool = True) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        base_dir: str,
+        enable_tray: bool = True,
+        autostart_mode: bool = False,
+    ) -> None:
         self.root = root
         self.base_dir = base_dir
         self.log_dir = os.path.join(base_dir, "logs")
         os.makedirs(self.log_dir, exist_ok=True)
+        # 开机自启模式：不显示主窗口，直接在托盘里跑并自动开 FTP
+        self.autostart_mode = autostart_mode
 
         self.cfg: AppConfig = load_config(base_dir)
         if not self.cfg.save_dir:
@@ -70,11 +83,22 @@ class App:
         self.busy = False
         self.last_result: Optional[RegistrationResult] = None
 
+        # ---- IP 校验服务 ----
+        self.ip_watch_interval = IP_CHECK_INTERVAL
+        self._ip_watch_stop = threading.Event()
+        self._ip_watch_thread: Optional[threading.Thread] = None
+        self._ip_event_queue: "queue.Queue[tuple]" = queue.Queue()
+        self._last_known_ip: Optional[str] = None
+        self._watch_printer_host = ""
+        self._last_auto_update_ts = 0.0
+
         self._closing = False
         self._after_id = None
         self._build_ui()
         self._apply_config()
         self._refresh_local_ip()
+        self._last_known_ip = self._current_ip() or None
+        self._watch_printer_host = self.cfg.printer_host
         self._schedule_log_drain()
         if self.enable_tray:
             self._init_tray()
@@ -83,6 +107,158 @@ class App:
         self.log(f"{APP_TITLE} v{VERSION} 已就绪")
         if not PYFTPDLIB_AVAILABLE:
             self.log("⚠ 缺少 pyftpdlib 依赖，请先运行 setup.bat（或把 vendor 目录一起拷过来）")
+        if self.autostart_mode:
+            self._enter_autostart_mode()
+        if self.cfg.watch_ip:
+            self._start_ip_watch()
+
+    # ================================================================ 开机自启
+    def _enter_autostart_mode(self) -> None:
+        """自启模式的入口：最小化到托盘 + 自动启动 FTP。"""
+        self.log("开机自启：最小化到托盘，并自动启动 FTP 接收服务")
+        tray_ok = self.tray is not None and self.tray.available
+        if tray_ok:
+            try:
+                self.root.withdraw()
+            except tk.TclError:
+                pass
+        else:
+            self.log("⚠ 托盘不可用，自启时改为直接显示窗口")
+        if not self._start_ftp(silent=True):
+            self.log("⚠ 开机自启时 FTP 启动失败，请打开主界面检查设置")
+
+    def _refresh_autostart_hint(self) -> None:
+        """把注册表里的真实状态同步到勾选框和提示文字。"""
+        enabled = autostart.is_enabled()
+        try:
+            self.autostart_var.set(enabled)
+            if enabled:
+                cmd = autostart.current_command()
+                short = cmd if len(cmd) <= 60 else cmd[:57] + "..."
+                self.autostart_hint.configure(text=f"已开启：{short}")
+            else:
+                self.autostart_hint.configure(text="未开启")
+        except tk.TclError:
+            pass
+
+    def _on_autostart_toggle(self) -> None:
+        want = bool(self.autostart_var.get())
+        ok, detail = autostart.enable() if want else autostart.disable()
+        self._refresh_autostart_hint()
+        if ok:
+            self.log(("✅ " if want else "✅ ") + detail)
+            self.cfg.auto_start = want
+            save_config(self.base_dir, self.cfg)
+        else:
+            self.log(f"❌ 设置开机自启失败：{detail}")
+            messagebox.showwarning(APP_TITLE, f"设置开机自启失败：\n{detail}")
+
+    # ================================================================ IP 校验服务
+    def _start_ip_watch(self) -> None:
+        if not self.cfg.printer_host:
+            self.log("IP 校验：还没填打印机地址，暂不启动（填好并保存后自动开始）")
+            return
+        if self._ip_watch_thread is not None and self._ip_watch_thread.is_alive():
+            return
+        self._ip_watch_stop.clear()
+        self._watch_printer_host = self.cfg.printer_host
+        self._ip_watch_thread = threading.Thread(
+            target=self._ip_watch_loop, name="ip-watch", daemon=True
+        )
+        self._ip_watch_thread.start()
+        self.log(
+            f"IP 校验已开启：每 {self.ip_watch_interval} 秒检查一次，"
+            f"IP 变动后自动更新打印机注册信息（当前 {self._last_known_ip or '未知'}）"
+        )
+        self._refresh_watch_hint()
+
+    def _stop_ip_watch(self) -> None:
+        self._ip_watch_stop.set()
+        self._ip_watch_thread = None
+        self._refresh_watch_hint()
+
+    def _ip_watch_loop(self) -> None:
+        while not self._ip_watch_stop.wait(self.ip_watch_interval):
+            try:
+                change = self._ip_watch_tick()
+            except Exception as exc:  # 后台线程绝不能把界面搞崩
+                self.log(f"IP 校验异常：{exc!r}")
+                continue
+            if change:
+                self._ip_event_queue.put(change)
+
+    def _ip_watch_tick(self):
+        """做一次检查：IP 变了就返回 (旧IP, 新IP)，否则 None。"""
+        if not self._watch_printer_host:
+            return None
+        ip = netinfo.choose_local_ip(self._watch_printer_host)
+        if not ip or ip == self._last_known_ip:
+            return None
+        old = self._last_known_ip
+        self._last_known_ip = ip
+        return (old or "未知", ip)
+
+    def _on_ip_changed(self, old_ip: str, new_ip: str) -> None:
+        """IP 变了：① 重启 FTP 让它公布新地址 ② 更新打印机里的注册信息。"""
+        self.log(f"⚠ 检测到本机 IP 变化：{old_ip} -> {new_ip}，开始自动处理")
+        try:
+            self.ip_var.set(new_ip)
+        except tk.TclError:
+            pass
+
+        # ① 重启 FTP（被动模式的 masquerade 地址是启动时定死的，必须重启）
+        if self.ftp is not None and self.ftp.running:
+            self.log("IP 校验：重启 FTP 服务以使用新地址…")
+            try:
+                self._start_ftp(silent=True)
+            except Exception as exc:
+                self.log(f"IP 校验：重启 FTP 失败：{exc}")
+
+        # ② 更新打印机注册信息（需要之前注册过的名字）
+        name = (self.name_var.get().strip() or self.cfg.last_name or "").strip()
+        if not name:
+            self.log("IP 校验：还没有注册过目的地名字，跳过自动更新（填好名字点一次「确认并注册」即可）")
+            return
+        if not self.cfg.printer_host:
+            self.log("IP 校验：没有配置打印机地址，跳过自动更新")
+            return
+        now = time.time()
+        if now - self._last_auto_update_ts < IP_AUTO_UPDATE_COOLDOWN:
+            left = int(IP_AUTO_UPDATE_COOLDOWN - (now - self._last_auto_update_ts))
+            self.log(f"IP 校验：刚更新过，{left} 秒内不再重复更新（避免频繁重注册）")
+            return
+        if self.busy:
+            self.log("IP 校验：正在注册中，稍后再更新打印机")
+            return
+
+        self.log(f"IP 校验：按新地址自动更新打印机目的地「{name}」…")
+        self._last_auto_update_ts = now
+        self.name_var.set(name)
+        self._on_go()
+
+    def _on_watch_ip_toggle(self) -> None:
+        want = bool(self.watch_ip_var.get())
+        self.cfg.watch_ip = want
+        if want:
+            self._start_ip_watch()
+        else:
+            self._stop_ip_watch()
+            self.log("IP 校验已关闭")
+        save_config(self.base_dir, self.cfg)
+        self._refresh_watch_hint()
+
+    def _refresh_watch_hint(self) -> None:
+        try:
+            if not self.watch_ip_var.get():
+                self.watch_ip_hint.configure(text="已关闭")
+            elif self._ip_watch_thread is not None and self._ip_watch_thread.is_alive():
+                self.watch_ip_hint.configure(
+                    text=f"每 {self.ip_watch_interval}s 检查，当前 {self._last_known_ip or '未知'}"
+                )
+            else:
+                self.watch_ip_hint.configure(text="未运行")
+        except tk.TclError:
+            pass
 
     # ================================================================ 界面
     def _build_ui(self) -> None:
@@ -222,8 +398,31 @@ class App:
             opt2, text="同名 / 同 IP 只保留一条（更新而不是新增）", variable=self.merge_by_ip_var
         ).pack(side="left", padx=(14, 0))
 
+        # 开机自启（写 HKCU Run，不需要管理员权限）
+        opt3 = ttk.Frame(go_box)
+        opt3.grid(row=2, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        self.autostart_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            opt3,
+            text="开机自动启动（登录后最小化到托盘，自动开 FTP）",
+            variable=self.autostart_var,
+            command=self._on_autostart_toggle,
+        ).pack(side="left")
+        self.autostart_hint = ttk.Label(opt3, text="", style="Sub.TLabel")
+        self.autostart_hint.pack(side="left", padx=(10, 0))
+
+        self.watch_ip_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            opt3,
+            text="IP 变动自动更新打印机",
+            variable=self.watch_ip_var,
+            command=self._on_watch_ip_toggle,
+        ).pack(side="left", padx=(18, 0))
+        self.watch_ip_hint = ttk.Label(opt3, text="", style="Sub.TLabel")
+        self.watch_ip_hint.pack(side="left", padx=(6, 0))
+
         action = ttk.Frame(go_box)
-        action.grid(row=2, column=0, columnspan=3, sticky="we", pady=(12, 0))
+        action.grid(row=3, column=0, columnspan=3, sticky="we", pady=(12, 0))
         self.go_btn = ttk.Button(action, text="确认并注册", style="Go.TButton", command=self._on_go)
         self.go_btn.pack(side="left")
         self.verify_btn = ttk.Button(action, text="自检 FTP", width=10, command=self._self_check)
@@ -261,6 +460,9 @@ class App:
         self.show_browser_var.set(cfg.show_browser)
         self.merge_by_ip_var.set(cfg.merge_by_ip)
         self._on_anon_toggle()
+        self._refresh_autostart_hint()
+        self.watch_ip_var.set(cfg.watch_ip)
+        self._refresh_watch_hint()
 
     def _collect_config(self) -> AppConfig:
         cfg = self.cfg
@@ -275,6 +477,7 @@ class App:
         cfg.last_name = self.name_var.get().strip()
         cfg.show_browser = bool(self.show_browser_var.get())
         cfg.merge_by_ip = bool(self.merge_by_ip_var.get())
+        cfg.watch_ip = bool(self.watch_ip_var.get())
         return cfg
 
     # ================================================================ 小工具
@@ -327,6 +530,23 @@ class App:
         items.append(("check", "检查状态", not self.busy))
         items.append(("open_dir", "打开保存目录", True))
         items.append(None)
+        watch_on = bool(getattr(self, "watch_ip_var", None) and self.watch_ip_var.get())
+        items.append(
+            (
+                "watch_ip",
+                f"IP 校验：{'已开启（点击关闭）' if watch_on else '已关闭（点击开启）'}",
+                True,
+            )
+        )
+        auto_on = autostart.is_enabled()
+        items.append(
+            (
+                "autostart",
+                f"开机自启：{'已开启（点击关闭）' if auto_on else '已关闭（点击开启）'}",
+                True,
+            )
+        )
+        items.append(None)
         items.append(("quit", "退出", True))
         return items
 
@@ -343,6 +563,22 @@ class App:
             self._check_status()
         elif action == "open_dir":
             self._open_dir()
+        elif action == "watch_ip":
+            try:
+                self.watch_ip_var.set(not self.watch_ip_var.get())
+            except tk.TclError:
+                pass
+            self._on_watch_ip_toggle()
+        elif action == "autostart":
+            ok, now_on, detail = autostart.toggle()
+            self._refresh_autostart_hint()
+            self.log(("✅ " if ok else "❌ ") + detail)
+            if ok:
+                self.cfg.auto_start = now_on
+                try:
+                    save_config(self.base_dir, self.cfg)
+                except Exception:
+                    pass
         elif action == "quit":
             self._quit_app()
 
@@ -419,6 +655,12 @@ class App:
             while True:
                 action = self.tray_queue.get_nowait()
                 self._on_tray_action(action)
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                old_ip, new_ip = self._ip_event_queue.get_nowait()
+                self._on_ip_changed(old_ip, new_ip)
         except queue.Empty:
             pass
         try:
@@ -762,6 +1004,11 @@ class App:
 
         self._collect_config()
         save_config(self.base_dir, self.cfg)
+        # 打印机地址可能是刚填的：保证 IP 校验服务在跑
+        if self.cfg.watch_ip and (
+            self._ip_watch_thread is None or not self._ip_watch_thread.is_alive()
+        ):
+            self._start_ip_watch()
 
         if not self._start_ftp(silent=True):
             return
@@ -880,6 +1127,10 @@ class App:
             except Exception:
                 pass
             self._browser = None
+        try:
+            self._ip_watch_stop.set()
+        except Exception:
+            pass
         if self.tray is not None:
             try:
                 self.tray.stop()
@@ -987,9 +1238,11 @@ def run_cli(base_dir: str, argv: list) -> int:
                 pass
 
 
-def main(base_dir: Optional[str] = None) -> None:
+def main(base_dir: Optional[str] = None, autostart: bool = False) -> None:
     enable_hi_dpi()
     base = base_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     root = tk.Tk()
-    App(root, base)
+    if autostart:
+        root.withdraw()
+    App(root, base, autostart_mode=autostart)
     root.mainloop()

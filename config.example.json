@@ -12,5 +12,7 @@
   "ftp_path": "/",
   "add_to_favorites": true,
   "step_wait_ms": 1500,
-  "merge_by_ip": true
+  "merge_by_ip": true,
+  "auto_start": false,
+  "watch_ip": true
 }

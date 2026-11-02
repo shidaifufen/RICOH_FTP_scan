@@ -13,8 +13,8 @@
 
 | 版本 | 文件 | 说明 |
 |---|---|---|
-| **单文件版** | [ScanLink-v1.1.0-portable.exe](https://github.com/shidaifufen/RICOH_FTP_scan/releases/download/v1.1.0/ScanLink-v1.1.0-portable.exe) | 一个 exe（14MB），拷走即用；首次启动解包 2~4 秒 |
-| **文件夹版** | [ScanLink-v1.1.0-folder.zip](https://github.com/shidaifufen/RICOH_FTP_scan/releases/download/v1.1.0/ScanLink-v1.1.0-folder.zip) | 解压后双击 `启动.bat`，启动更快（exe 4.4MB + `_internal`） |
+| **单文件版** | [ScanLink-v1.3.0-portable.exe](https://github.com/shidaifufen/RICOH_FTP_scan/releases/download/v1.3.0/ScanLink-v1.3.0-portable.exe) | 一个 exe（14MB），拷走即用；首次启动解包 2~4 秒 |
+| **文件夹版** | [ScanLink-v1.3.0-folder.zip](https://github.com/shidaifufen/RICOH_FTP_scan/releases/download/v1.3.0/ScanLink-v1.3.0-folder.zip) | 解压后双击 `启动.bat`，启动更快（exe 4.4MB + `_internal`） |
 
 全部版本 / 更新日志：<https://github.com/shidaifufen/RICOH_FTP_scan/releases>
 
@@ -59,6 +59,10 @@
 - **系统托盘常驻**：悬停看状态；双击开窗口；右键可启停 FTP / 复制地址 / 检查状态 / 打开目录 / 退出
 - 一次会话只开一个浏览器进程，注册完自动注销打印机后台会话
 - 端口 21 被占用自动改用 2121/2122…；保存目录不可写自动降级（桌面 → 文档 → 程序目录）
+- **开机自启**：勾选后登录 Windows 时自动运行并最小化到托盘、自动启动 FTP；
+  写当前用户注册表 `HKCU\...\Run`，**不需要管理员权限**，界面勾选框和托盘右键都能随时开关
+- **IP 校验服务**：每 60 秒检查一次本机 IP，**IP 一变就自动重启 FTP 并更新打印机里的注册信息**，
+  不用手工重新注册（DHCP 换地址、换网口、VPN 切换都能自动跟上；5 分钟内不重复更新）
 - 每次启动生成 `logs\env-report.txt` 环境自检，排障先看它
 
 ---
@@ -85,6 +89,8 @@
 | `admin_user` / `admin_password` | 打印机后台管理员账号密码（明文存在本机） |
 | `merge_by_ip` | 同名/同 IP 只保留一条，默认 `true` |
 | `ftp_path` | 打印机里填的路径，默认 `/` |
+| `auto_start` | 仅作记录；开机自启的真实开关在注册表，以界面勾选/托盘菜单为准 |
+| `watch_ip` | IP 校验开关，默认 `true`：IP 变动后自动更新打印机注册信息 |
 
 **命令行模式**（不开界面，跑一次注册，适合现场验证 / 自动化）：
 
@@ -142,6 +148,19 @@ set PYTHONPATH=%~dp0tools
 
 **提示「进入服务器的用户数超过最大允许限制」**
 理光后台并发会话有限，等 1~2 分钟自动释放或重启打印机。程序注册完/退出时会自动注销，正常使用不会占满。
+
+**本机 IP 变了（DHCP 重新分配 / 换网口 / VPN），扫描不动了**
+程序自带 IP 校验：默认每 60 秒检查一次，发现 IP 变化会
+① 用新地址重启内置 FTP ② 自动把打印机通讯簿里那条记录的服务器地址改成新 IP。
+- 前提：这个目的地名字之前注册过（程序记得上次的名字）
+- 想关掉：界面勾选「IP 变动自动更新打印机」，或托盘右键 →「IP 校验：已开启（点击关闭）」
+- 也可以手工点一次「确认并注册」（同名会更新，不会多出一条）
+
+**开机自启没生效 / 想关掉**
+- 开/关：界面上「开机自动启动」勾选框，或托盘右键 → 「开机自启：已开启（点击关闭）」
+- 实现是 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `ScanLink` 值；
+  自启时加 `--autostart` 参数，**不显示窗口**、直接最小化到托盘并自动开 FTP
+- 如果自启后看不到托盘图标，程序会退回显示主窗口（说明当前会话托盘被限制）
 
 **托盘图标不出现 / 保存目录提示"拒绝访问"**
 先看 `logs\env-report.txt`：若"管理员: True"但三个写入测试全是"拒绝"，说明程序**不是在正常桌面会话里启动的**（例如通过自动化/沙箱终端）。在资源管理器里双击 `启动.bat` 即可。

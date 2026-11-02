@@ -96,16 +96,22 @@ def main() -> int:
             pass
         return 1
 
-    if "--cli-register" not in sys.argv[1:] and not _single_instance():
-        _notify_already_running()
+    args = sys.argv[1:]
+    is_cli = "--cli-register" in args
+    is_autostart = "--autostart" in args
+
+    if not is_cli and not _single_instance():
+        # 自启时不弹窗打扰（多半是上一次的实例还收在托盘里跑着）
+        if not is_autostart:
+            _notify_already_running()
         return 0
 
-    if "--cli-register" in sys.argv[1:]:
+    if is_cli:
         from app.main import run_cli
 
-        return run_cli(APP_DIR, sys.argv[1:])
+        return run_cli(APP_DIR, args)
 
-    run_gui(APP_DIR)
+    run_gui(APP_DIR, autostart=is_autostart)
     return 0
 
 

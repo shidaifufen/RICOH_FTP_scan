@@ -114,6 +114,13 @@ def main() -> int:
     app.ip_var.set("192.168.1.10")
     app.dir_var.set(r"D:\扫描件\张三")
 
+    # IP 校验的提示文字里有本机真实 IP，截图里换成占位值
+    app._stop_ip_watch()
+    app._last_known_ip = "192.168.1.10"
+    app._watch_printer_host = "192.168.1.100"
+    app.watch_ip_var.set(True)
+    app.watch_ip_hint.configure(text="每 60s 检查，当前 192.168.1.10")
+
     app.log("本机地址（给打印机用）：192.168.1.10")
     app.log("FTP 服务已启动，扫描件会保存到：D:\\扫描件\\张三")
     app.log("防火墙：放通 TCP 21 成功 · TCP 30000-30099 成功")

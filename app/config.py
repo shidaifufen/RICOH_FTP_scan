@@ -13,7 +13,7 @@ def desktop_dir() -> str:
     """取当前用户的桌面目录。
 
     不能直接拼 `~/Desktop`：中文系统的桌面叫「桌面」，而且很多人开着 OneDrive
-    备份，桌面会被重定向到 `...\OneDrive\桌面`。所以读注册表里的实际路径。
+    备份，桌面会被重定向到 `...\\OneDrive\\桌面`。所以读注册表里的实际路径。
     """
     if sys.platform.startswith("win"):
         try:
@@ -52,6 +52,10 @@ class AppConfig:
     step_wait_ms: int = 1200
     # 同名或同一个 FTP 服务器 IP 视为同一条记录，注册时更新而不是新增
     merge_by_ip: bool = True
+    # 仅作记录；真实开关以注册表（HKCU Run）为准，见 app/autostart.py
+    auto_start: bool = False
+    # IP 校验：本机 IP 变动后自动更新打印机里的注册信息
+    watch_ip: bool = True
 
 
 def config_path(base_dir: str) -> str:
